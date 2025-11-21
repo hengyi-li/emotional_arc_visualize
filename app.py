@@ -3,7 +3,8 @@ import numpy as np
 import torch
 import streamlit as st
 from transformers import BertTokenizer, BertForSequenceClassification
-import matplotlib.pyplot as plt
+
+import plotly.graph_objects as go  # 交互图表
 
 # ==============================
 # 0. 页面基本配置
@@ -282,12 +283,12 @@ if run_btn and final_text:
     if not positions:
         st.warning("未生成任何窗口，可能是参数设置不合理（例如窗口太大、文本太短）。")
     else:
-        # ==========================
-        # 6.1 概览信息
-        # ==========================
         st.success("分析完成 ✅")
 
+        # numpy 数组方便做统计
         scores_arr = np.array(scores)
+        pos_arr = np.array(positions)
+
         avg_score = float(scores_arr.mean())
         min_score = float(scores_arr.min())
         max_score = float(scores_arr.max())
@@ -296,6 +297,9 @@ if run_btn and final_text:
         min_pos = positions[min_idx]
         max_pos = positions[max_idx]
 
+        # ==========================
+        # 6.1 整体情感概览
+        # ==========================
         st.subheader("3️⃣ 整体情感概览")
         col_a, col_b, col_c = st.columns(3)
         with col_a:
@@ -306,74 +310,177 @@ if run_btn and final_text:
             st.metric("最高情感得分", f"{max_score:.3f}", help=f"出现在字符位置约 {max_pos}")
 
         # ==========================
-        # 6.2 结果展示：Tabs
+        # 6.2 交互浏览：选择当前窗口
         # ==========================
-        st.subheader("4️⃣ Emotional Arc 详细结果")
-        tab_arc, tab_arc_resampled, tab_table = st.tabs(
-            ["原始情感弧线", "重采样弧线", "窗口详情"]
+        st.subheader("4️⃣ 沿情感弧线浏览文本片段")
+
+        # 默认选中：最高情感点
+        selected_idx = st.slider(
+            "拖动滑块，沿情感弧线浏览不同位置的窗口",
+            min_value=0,
+            max_value=len(positions) - 1,
+            value=max_idx,
+            step=1,
+            help="你也可以用键盘左右方向键精细调整。",
         )
 
-        # ---- Tab 1: 原始情感弧线 ----
-        with tab_arc:
-            st.markdown("**原始情感弧线（按窗口起始位置）**")
-            fig1, ax1 = plt.subplots(figsize=(6, 3))
-            if positions and scores:
-                ax1.plot(positions, scores, marker="o")
+        selected_pos = positions[selected_idx]
+        selected_score = scores[selected_idx]
+        selected_win = windows[selected_idx]
+        total_len = len(final_text)
+        # 窗口中心在全文中的相对位置
+        center_pos = selected_pos + window_size / 2
+        percent = center_pos / max(total_len, 1)
 
-                # 标记最高 & 最低点
-                pos_arr = np.array(positions)
-                ax1.scatter(
-                    [pos_arr[max_idx]],
-                    [scores_arr[max_idx]],
-                    s=60,
-                    edgecolors="black",
-                    facecolors="none",
-                    linewidths=1.5,
+        # 为 tooltip 准备 snippets
+        snippets = []
+        for w in windows:
+            s = w[:50]
+            if len(w) > 50:
+                s += "..."
+            snippets.append(s)
+
+        # ==========================
+        # 6.3 左右布局：左图右详情
+        # ==========================
+        col_left, col_right = st.columns([2, 1])
+
+        # ---- 左侧：交互情感弧线 + 重采样 ----
+        with col_left:
+            tab_arc, tab_arc_resampled, tab_table = st.tabs(
+                ["原始情感弧线", "重采样弧线", "窗口详情表格"]
+            )
+
+            # ---- Tab 1: 原始情感弧线（Plotly）----
+            with tab_arc:
+                fig1 = go.Figure()
+
+                # 主线：情感弧线
+                fig1.add_trace(
+                    go.Scatter(
+                        x=positions,
+                        y=scores,
+                        mode="lines+markers",
+                        name="Emotional Arc",
+                        customdata=[
+                            [i, snippets[i]] for i in range(len(positions))
+                        ],
+                        hovertemplate=(
+                            "Window index: %{customdata[0]}<br>"
+                            "Start position: %{x}<br>"
+                            "Score: %{y:.3f}<br>"
+                            "Snippet: %{customdata[1]}"
+                        ),
+                    )
                 )
-                ax1.scatter(
-                    [pos_arr[min_idx]],
-                    [scores_arr[min_idx]],
-                    s=60,
-                    edgecolors="black",
-                    facecolors="none",
-                    linewidths=1.5,
+
+                # 高亮当前选中窗口
+                fig1.add_trace(
+                    go.Scatter(
+                        x=[selected_pos],
+                        y=[selected_score],
+                        mode="markers",
+                        name="Selected window",
+                        marker=dict(size=12, symbol="circle-open", line=dict(width=2)),
+                        hoverinfo="skip",
+                    )
                 )
 
-            ax1.set_xlabel("Text Start Position (Character Index)")
-            ax1.set_ylabel("Sentiment Score (Positive Prob.)")
-            ax1.set_ylim(0, 1)
-            ax1.grid(True, alpha=0.3)
-            st.pyplot(fig1)
-
-        # ---- Tab 2: 重采样后的情感弧线 ----
-        with tab_arc_resampled:
-            st.markdown("**重采样情感弧线（归一化位置 0–1）**")
-            fig2, ax2 = plt.subplots(figsize=(6, 3))
-            if arc_x and arc_scores:
-                ax2.plot(arc_x, arc_scores, marker="o")
-            ax2.set_xlabel("Normalized Position (0–1)")
-            ax2.set_ylabel("Sentiment Score (Positive Prob.)")
-            ax2.set_ylim(0, 1)
-            ax2.grid(True, alpha=0.3)
-            st.pyplot(fig2)
-
-        # ---- Tab 3: 窗口详情表格 ----
-        with tab_table:
-            st.markdown("**每个窗口的文本片段与情感得分**")
-            import pandas as pd
-
-            df_rows = []
-            for idx, (pos, win, sc) in enumerate(zip(positions, windows, scores)):
-                df_rows.append(
-                    {
-                        "窗口序号": idx,
-                        "起始位置（字符索引）": pos,
-                        "窗口文本": win,
-                        "情感得分 (Positive Prob.)": sc,
-                    }
+                # 高亮最高点 & 最低点
+                fig1.add_trace(
+                    go.Scatter(
+                        x=[max_pos],
+                        y=[max_score],
+                        mode="markers",
+                        name="Max score",
+                        marker=dict(size=10, symbol="triangle-up"),
+                        hovertemplate="Max score<br>Start: %{x}<br>Score: %{y:.3f}",
+                    )
                 )
-            df = pd.DataFrame(df_rows)
-            st.dataframe(df, use_container_width=True)
+                fig1.add_trace(
+                    go.Scatter(
+                        x=[min_pos],
+                        y=[min_score],
+                        mode="markers",
+                        name="Min score",
+                        marker=dict(size=10, symbol="triangle-down"),
+                        hovertemplate="Min score<br>Start: %{x}<br>Score: %{y:.3f}",
+                    )
+                )
+
+                fig1.update_layout(
+                    xaxis_title="Text Start Position (Character Index)",
+                    yaxis_title="Sentiment Score (Positive Prob.)",
+                    yaxis=dict(range=[0, 1]),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                    margin=dict(l=40, r=20, t=40, b=40),
+                    hovermode="x unified",
+                )
+
+                st.plotly_chart(fig1, use_container_width=True)
+
+            # ---- Tab 2: 重采样后的情感弧线 ----
+            with tab_arc_resampled:
+                fig2 = go.Figure()
+                if arc_x and arc_scores:
+                    fig2.add_trace(
+                        go.Scatter(
+                            x=arc_x,
+                            y=arc_scores,
+                            mode="lines+markers",
+                            name="Resampled Arc",
+                            hovertemplate="Pos: %{x:.2f}<br>Score: %{y:.3f}",
+                        )
+                    )
+
+                fig2.update_layout(
+                    xaxis_title="Normalized Position (0–1)",
+                    yaxis_title="Sentiment Score (Positive Prob.)",
+                    yaxis=dict(range=[0, 1]),
+                    margin=dict(l=40, r=20, t=40, b=40),
+                    hovermode="x",
+                )
+
+                st.plotly_chart(fig2, use_container_width=True)
+
+            # ---- Tab 3: 窗口详情表格 ----
+            with tab_table:
+                st.markdown("**每个窗口的文本片段与情感得分（可排序、筛选）**")
+                import pandas as pd
+
+                df_rows = []
+                for idx, (pos, win, sc) in enumerate(zip(positions, windows, scores)):
+                    df_rows.append(
+                        {
+                            "窗口序号": idx,
+                            "起始位置（字符索引）": pos,
+                            "窗口文本": win,
+                            "情感得分 (Positive Prob.)": sc,
+                        }
+                    )
+                df = pd.DataFrame(df_rows)
+                st.dataframe(df, use_container_width=True)
+
+        # ---- 右侧：当前窗口详情 ----
+        with col_right:
+            st.markdown("**当前选中窗口详情**")
+            st.markdown(
+                f"- 窗口序号：`{selected_idx}` / `{len(positions) - 1}`  "
+            )
+            st.markdown(
+                f"- 起始位置：`{selected_pos}` 字符（窗口中心约在全文 `{percent * 100:.1f}%` 处）"
+            )
+            st.markdown(f"- 情感得分：`{selected_score:.4f}`")
+
+            st.markdown("---")
+            st.markdown("**窗口文本内容**")
+            st.write(selected_win)
+
+            # 上一窗口 / 下一窗口：简单导航提示（逻辑仍由 slider 控制）
+            st.markdown("---")
+            st.caption(
+                "提示：可以拖动上方滑块，或用键盘左右方向键，连续浏览不同位置的窗口。"
+            )
 
 
 # ==============================
