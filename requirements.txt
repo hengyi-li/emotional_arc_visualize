@@ -1,6 +1,6 @@
 streamlit==1.38.0
-torch==2.0.1
+torch==2.5.0
 transformers==4.44.0
-numpy==1.26.4
-matplotlib==3.9.0
-pandas==2.2.2
+numpy
+matplotlib
+pandas
