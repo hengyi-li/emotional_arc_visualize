@@ -279,8 +279,8 @@ if run_btn and final_text:
         fig1, ax1 = plt.subplots(figsize=(6, 3))
         if positions and scores:
             ax1.plot(positions, scores, marker="o")
-        ax1.set_xlabel("文本起始位置（字符索引）")
-        ax1.set_ylabel("正向情感概率")
+        ax1.set_xlabel("Text Start Position (Character Index)")
+        ax1.set_ylabel("Sentiment Score (Positive Prob.)")
         ax1.set_ylim(0, 1)
         ax1.grid(True, alpha=0.3)
         st.pyplot(fig1)
@@ -291,8 +291,8 @@ if run_btn and final_text:
         fig2, ax2 = plt.subplots(figsize=(6, 3))
         if arc_x and arc_scores:
             ax2.plot(arc_x, arc_scores, marker="o")
-        ax2.set_xlabel("归一化文本位置 (0–1)")
-        ax2.set_ylabel("正向情感概率")
+        ax2.set_xlabel("Normalized Position (0–1)")
+        ax2.set_ylabel("Sentiment Score (Positive Prob.)")
         ax2.set_ylim(0, 1)
         ax2.grid(True, alpha=0.3)
         st.pyplot(fig2)
