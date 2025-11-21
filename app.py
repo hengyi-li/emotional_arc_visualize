@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import streamlit as st
 from transformers import BertTokenizer, BertForSequenceClassification
+
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events  # 用于捕获 Plotly 点击事件
 
@@ -23,8 +24,8 @@ st.write(
 )
 
 st.info(
-    "情感弧线 = 文本从头到尾，情绪如何在“时间维度”上起伏的一条曲线。"
-    "曲线越往上，表示越偏正向；越往下，表示越偏负向。"
+    "情感弧线：把文本从头到尾切成许多小片段，分别评估情感（0=负向，1=正向），"
+    "按阅读顺序连成一条“情绪轨迹”。你可以点线上的任意一点，查看对应片段。"
 )
 
 
@@ -45,7 +46,6 @@ def load_model_and_tokenizer():
 tokenizer, model, device = load_model_and_tokenizer()
 st.sidebar.success(f"模型已加载，设备：{device}")
 
-
 # ==============================
 # 2. 初始化会话状态
 # ==============================
@@ -59,6 +59,7 @@ if "selected_idx" not in st.session_state:
 # 3. 滑动窗口 & 重采样函数
 # ==============================
 def sliding_windows(text: str, window_size: int = 50, step: int = 40):
+    """基于字符的滑动窗口。"""
     windows = []
     positions = []
 
@@ -71,7 +72,7 @@ def sliding_windows(text: str, window_size: int = 50, step: int = 40):
         return windows, positions
 
     for i in range(0, n, step):
-        window = text[i: i + window_size]
+        window = text[i : i + window_size]
         if not window:
             break
         windows.append(window)
@@ -83,12 +84,13 @@ def sliding_windows(text: str, window_size: int = 50, step: int = 40):
 
 
 def sentiment_scores(sent_list, batch_size: int = 32, max_length: int = 64):
+    """对一批文本批量计算情感得分（正向概率 0-1）。"""
     all_scores = []
     if not sent_list:
         return all_scores
 
     for i in range(0, len(sent_list), batch_size):
-        batch = sent_list[i: i + batch_size]
+        batch = sent_list[i : i + batch_size]
         inputs = tokenizer(
             batch,
             return_tensors="pt",
@@ -108,6 +110,7 @@ def sentiment_scores(sent_list, batch_size: int = 32, max_length: int = 64):
 
 
 def resample_series(values, target_len: int = 20):
+    """线性插值到固定长度 target_len（用于对比不同文本）。"""
     if target_len <= 0:
         raise ValueError("target_len must be positive")
 
@@ -135,17 +138,17 @@ window_size = st.sidebar.number_input(
     "窗口大小（字符）",
     min_value=10,
     max_value=2000,
-    value=50,
-    step=5,
-    help="每次情感分析的字符长度，类似一个“片段”的大小。",
+    value=80,
+    step=10,
+    help="每次情感分析的字符长度，类似一个“镜头”的大小。",
 )
 
 step_size = st.sidebar.number_input(
     "滑动步长（字符）",
     min_value=1,
     max_value=2000,
-    value=40,
-    step=1,
+    value=60,
+    step=5,
     help="窗口每次向前滑动的字符数。步长越小，曲线越平滑，但计算越慢。",
 )
 
@@ -199,15 +202,13 @@ with col_file:
     )
 
 with col_text:
-    default_text = ""
     text_input = st.text_area(
         "或者直接在这里输入 / 粘贴文本",
-        value=default_text,
+        value="",
         height=220,
         placeholder="例如：小说片段、长微博、文章内容等……",
     )
 
-# 读取文件内容（若有）
 file_text = ""
 if uploaded_file is not None:
     bytes_data = uploaded_file.read()
@@ -219,7 +220,6 @@ if uploaded_file is not None:
         except UnicodeDecodeError:
             st.error("无法解码该 txt 文件，请确认编码为 UTF-8 或 GBK。")
 
-# 最终使用的文本：优先文件，否则文本框
 final_text = file_text.strip() if file_text else text_input.strip()
 
 MAX_CHARS = 20000
@@ -340,8 +340,8 @@ if arc_data is not None:
         # 为 tooltip 准备 snippets
         snippets = []
         for w in windows:
-            s = w[:50]
-            if len(w) > 50:
+            s = w[:60]
+            if len(w) > 60:
                 s += "..."
             snippets.append(s)
 
@@ -353,8 +353,8 @@ if arc_data is not None:
 
         # ---- 左侧：弧线 / 重采样 / 表格 ----
         with col_left:
-            tab_arc, tab_arc_resampled, tab_table = st.tabs(
-                ["原始情感弧线（可点击）", "重采样弧线", "窗口详情表格"]
+            tab_arc, tab_resampled, tab_table = st.tabs(
+                ["原始情感弧线（点击查看）", "重采样弧线", "窗口详情表格"]
             )
 
             # Tab 1: 原始情感弧线（Plotly + 点击交互）
@@ -368,24 +368,26 @@ if arc_data is not None:
                         y=scores,
                         mode="lines+markers",
                         name="Emotional Arc",
+                        line=dict(color="#4F81BD", width=2),
+                        marker=dict(color="#4F81BD", size=6),
                         customdata=[[i, snippets[i]] for i in range(len(positions))],
                         hovertemplate=(
-                            "Window index: %{customdata[0]}<br>"
-                            "Start position: %{x}<br>"
+                            "<b>Window #%{customdata[0]}</b><br>"
+                            "Start: %{x}<br>"
                             "Score: %{y:.3f}<br>"
                             "Snippet: %{customdata[1]}"
                         ),
                     )
                 )
 
-                # 高亮最高点 & 最低点（全局特征）
+                # 全局最大 / 最小点（绿色 / 红色）
                 fig1.add_trace(
                     go.Scatter(
                         x=[max_pos],
                         y=[max_score],
                         mode="markers",
                         name="Max score",
-                        marker=dict(size=10, symbol="triangle-up"),
+                        marker=dict(color="#2E8B57", size=10, symbol="triangle-up"),
                         hovertemplate="Max score<br>Start: %{x}<br>Score: %{y:.3f}",
                     )
                 )
@@ -395,12 +397,33 @@ if arc_data is not None:
                         y=[min_score],
                         mode="markers",
                         name="Min score",
-                        marker=dict(size=10, symbol="triangle-down"),
+                        marker=dict(color="#E24A33", size=10, symbol="triangle-down"),
                         hovertemplate="Min score<br>Start: %{x}<br>Score: %{y:.3f}",
                     )
                 )
 
+                # 当前选中窗口（橙色空心圈）
+                sel_idx = st.session_state.selected_idx
+                sel_pos = positions[sel_idx]
+                sel_score = scores[sel_idx]
+                fig1.add_trace(
+                    go.Scatter(
+                        x=[sel_pos],
+                        y=[sel_score],
+                        mode="markers",
+                        name="Selected",
+                        marker=dict(
+                            color="#FFAA00",
+                            size=14,
+                            symbol="circle-open",
+                            line=dict(width=2),
+                        ),
+                        hoverinfo="skip",
+                    )
+                )
+
                 fig1.update_layout(
+                    template="plotly_white",
                     xaxis_title="Text Start Position (Character Index)",
                     yaxis_title="Sentiment Score (Positive Prob.)",
                     yaxis=dict(range=[0, 1]),
@@ -411,7 +434,6 @@ if arc_data is not None:
                     hovermode="x unified",
                 )
 
-                # 用 plotly_events 捕获点击事件
                 clicked_points = plotly_events(
                     fig1,
                     click_event=True,
@@ -428,8 +450,8 @@ if arc_data is not None:
                     except Exception:
                         pass
 
-                # Tab 2: 重采样后的情感弧线
-            with tab_arc_resampled:
+            # Tab 2: 重采样后的情感弧线
+            with tab_resampled:
                 fig2 = go.Figure()
                 if arc_x and arc_scores:
                     fig2.add_trace(
@@ -438,11 +460,14 @@ if arc_data is not None:
                             y=arc_scores,
                             mode="lines+markers",
                             name="Resampled Arc",
+                            line=dict(color="#AA6FE8", width=2),
+                            marker=dict(color="#AA6FE8", size=6),
                             hovertemplate="Pos: %{x:.2f}<br>Score: %{y:.3f}",
                         )
                     )
 
                 fig2.update_layout(
+                    template="plotly_white",
                     xaxis_title="Normalized Position (0–1)",
                     yaxis_title="Sentiment Score (Positive Prob.)",
                     yaxis=dict(range=[0, 1]),
@@ -505,7 +530,7 @@ if arc_data is not None:
                     )
 
             st.caption(
-                "交互说明：可以**点击左侧情感弧线上任意一点**，右侧会显示对应窗口的文本；"
+                "交互说明：**点击左侧情感弧线上任意一点**，右侧会显示对应窗口的文本；"
                 "也可以使用“上一窗口 / 下一窗口”按钮逐步浏览。"
             )
 
