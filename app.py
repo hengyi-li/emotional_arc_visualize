@@ -29,7 +29,7 @@ st.info(
 
 
 # ==============================
-# 1. 模型加载（缓存）
+# 1. 设备 & 模型缓存（只加载一次）
 # ==============================
 @st.cache_resource
 def load_model_and_tokenizer():
@@ -50,31 +50,35 @@ st.sidebar.success(f"模型已加载，设备：{device}")
 # 2. 初始化会话状态
 # ==============================
 if "arc_data" not in st.session_state:
-    st.session_state.arc_data = None  # 存放分析结果
+    st.session_state.arc_data = None  # 存分析结果
 if "selected_idx" not in st.session_state:
-    st.session_state.selected_idx = 0  # 当前选中窗口序号
+    st.session_state.selected_idx = 0  # 当前选中的窗口索引
 
 
 # ==============================
-# 3. 工具函数
+# 3. 滑动窗口 & 重采样函数
 # ==============================
 def sliding_windows(text: str, window_size: int = 50, step: int = 40):
     windows = []
     positions = []
+
     n = len(text)
     if n == 0:
         return windows, positions
     if n <= window_size:
-        return [text], [0]
+        windows.append(text)
+        positions.append(0)
+        return windows, positions
 
     for i in range(0, n, step):
-        window = text[i : i + window_size]
+        window = text[i: i + window_size]
         if not window:
             break
         windows.append(window)
         positions.append(i)
         if len(window) < window_size:
             break
+
     return windows, positions
 
 
@@ -84,7 +88,7 @@ def sentiment_scores(sent_list, batch_size: int = 32, max_length: int = 64):
         return all_scores
 
     for i in range(0, len(sent_list), batch_size):
-        batch = sent_list[i : i + batch_size]
+        batch = sent_list[i: i + batch_size]
         inputs = tokenizer(
             batch,
             return_tensors="pt",
@@ -114,29 +118,16 @@ def resample_series(values, target_len: int = 20):
 
     values = np.array(values, dtype=float)
     n = len(values)
+
     x_old = np.linspace(0, 1, n)
     x_new = np.linspace(0, 1, target_len)
     new_values = np.interp(x_new, x_old, values)
+
     return new_values.tolist(), x_new.tolist()
 
 
-@st.cache_data(show_spinner=False)
-def compute_emotional_arc(
-    text: str,
-    window_size: int,
-    step_size: int,
-    arc_len: int,
-    batch_size: int,
-    max_length: int,
-):
-    windows, positions = sliding_windows(text, window_size, step_size)
-    scores = sentiment_scores(windows, batch_size=batch_size, max_length=max_length)
-    arc_scores, arc_x = resample_series(scores, target_len=arc_len)
-    return positions, scores, arc_x, arc_scores, windows
-
-
 # ==============================
-# 4. 侧边栏参数
+# 4. 侧边栏参数设置
 # ==============================
 st.sidebar.header("参数设置")
 
@@ -194,7 +185,7 @@ else:
 
 
 # ==============================
-# 5. 文本输入区
+# 5. 文本输入区域：上传文件 or 文本框
 # ==============================
 st.subheader("1️⃣ 输入文本")
 
@@ -208,13 +199,15 @@ with col_file:
     )
 
 with col_text:
+    default_text = ""
     text_input = st.text_area(
         "或者直接在这里输入 / 粘贴文本",
-        value="",
+        value=default_text,
         height=220,
         placeholder="例如：小说片段、长微博、文章内容等……",
     )
 
+# 读取文件内容（若有）
 file_text = ""
 if uploaded_file is not None:
     bytes_data = uploaded_file.read()
@@ -226,6 +219,7 @@ if uploaded_file is not None:
         except UnicodeDecodeError:
             st.error("无法解码该 txt 文件，请确认编码为 UTF-8 或 GBK。")
 
+# 最终使用的文本：优先文件，否则文本框
 final_text = file_text.strip() if file_text else text_input.strip()
 
 MAX_CHARS = 20000
@@ -247,7 +241,25 @@ else:
 
 
 # ==============================
-# 6. 点击按钮开始分析（只更新 session_state）
+# 6. 情感弧线分析逻辑 + 缓存
+# ==============================
+@st.cache_data(show_spinner=False)
+def compute_emotional_arc(
+    text: str,
+    window_size: int,
+    step_size: int,
+    arc_len: int,
+    batch_size: int,
+    max_length: int,
+):
+    windows, positions = sliding_windows(text, window_size, step_size)
+    scores = sentiment_scores(windows, batch_size=batch_size, max_length=max_length)
+    arc_scores, arc_x = resample_series(scores, target_len=arc_len)
+    return positions, scores, arc_x, arc_scores, windows
+
+
+# ==============================
+# 7. 点击按钮开始分析（只更新 session_state）
 # ==============================
 st.subheader("2️⃣ 运行分析")
 
@@ -279,12 +291,13 @@ if run_btn and final_text:
             "arc_scores": arc_scores,
             "windows": windows,
         }
-        st.session_state.selected_idx = max_idx_tmp  # 初始默认选中最高点
+        st.session_state.selected_idx = max_idx_tmp  # 默认选中情感最高点
+
         st.success("分析完成 ✅")
 
 
 # ==============================
-# 7. 若已有分析结果，展示交互式 Emotional Arc
+# 8. 若已有分析结果，展示交互式 Emotional Arc
 # ==============================
 arc_data = st.session_state.arc_data
 
@@ -310,7 +323,7 @@ if arc_data is not None:
         min_pos = positions[min_idx]
         max_pos = positions[max_idx]
 
-        # ---- 7.1 整体情感概览 ----
+        # ---- 8.1 整体情感概览 ----
         st.subheader("3️⃣ 整体情感概览")
         col_a, col_b, col_c = st.columns(3)
         with col_a:
@@ -320,33 +333,11 @@ if arc_data is not None:
         with col_c:
             st.metric("最高情感得分", f"{max_score:.3f}", help=f"出现在字符位置约 {max_pos}")
 
-        # ---- 7.2 交互浏览：统一用 session_state.selected_idx ----
-        st.subheader("4️⃣ 沿情感弧线浏览文本片段")
+        # ---- 8.2 布局：左弧线 + 右详情 ----
+        st.subheader("4️⃣ 交互式浏览 Emotional Arc")
+        col_left, col_right = st.columns([2, 1])
 
-        # 保证 index 合法
-        if st.session_state.selected_idx >= len(positions):
-            st.session_state.selected_idx = len(positions) - 1
-        if st.session_state.selected_idx < 0:
-            st.session_state.selected_idx = 0
-
-        # Slider 控制：用独立 key，同步回 selected_idx
-        slider_idx = st.slider(
-            "拖动滑块，沿情感弧线浏览不同位置的窗口（也可以点击下方折线图中的点）",
-            min_value=0,
-            max_value=len(positions) - 1,
-            value=st.session_state.selected_idx,
-            key="slider_idx",
-        )
-        st.session_state.selected_idx = slider_idx
-
-        selected_idx = st.session_state.selected_idx
-        selected_pos = positions[selected_idx]
-        selected_score = scores[selected_idx]
-        selected_win = windows[selected_idx]
-
-        center_pos = selected_pos + window_size / 2
-        percent = center_pos / max(total_len, 1)
-
+        # 为 tooltip 准备 snippets
         snippets = []
         for w in windows:
             s = w[:50]
@@ -354,18 +345,23 @@ if arc_data is not None:
                 s += "..."
             snippets.append(s)
 
-        # ---- 7.3 左右布局 ----
-        col_left, col_right = st.columns([2, 1])
+        # 确保 selected_idx 在范围内
+        if st.session_state.selected_idx >= len(positions):
+            st.session_state.selected_idx = len(positions) - 1
+        if st.session_state.selected_idx < 0:
+            st.session_state.selected_idx = 0
 
+        # ---- 左侧：弧线 / 重采样 / 表格 ----
         with col_left:
             tab_arc, tab_arc_resampled, tab_table = st.tabs(
                 ["原始情感弧线（可点击）", "重采样弧线", "窗口详情表格"]
             )
 
-            # Tab 1: 原始情感弧线 + 点击选中
+            # Tab 1: 原始情感弧线（Plotly + 点击交互）
             with tab_arc:
                 fig1 = go.Figure()
 
+                # 主线：情感弧线
                 fig1.add_trace(
                     go.Scatter(
                         x=positions,
@@ -382,19 +378,7 @@ if arc_data is not None:
                     )
                 )
 
-                # 当前选中点
-                fig1.add_trace(
-                    go.Scatter(
-                        x=[selected_pos],
-                        y=[selected_score],
-                        mode="markers",
-                        name="Selected window",
-                        marker=dict(size=12, symbol="circle-open", line=dict(width=2)),
-                        hoverinfo="skip",
-                    )
-                )
-
-                # 全局 max/min 点
+                # 高亮最高点 & 最低点（全局特征）
                 fig1.add_trace(
                     go.Scatter(
                         x=[max_pos],
@@ -421,32 +405,30 @@ if arc_data is not None:
                     yaxis_title="Sentiment Score (Positive Prob.)",
                     yaxis=dict(range=[0, 1]),
                     legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="left",
-                        x=0,
+                        orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0
                     ),
                     margin=dict(l=40, r=20, t=40, b=40),
                     hovermode="x unified",
                 )
 
-                # 用 plotly_events 捕获点击的点
-                events = plotly_events(
+                # 用 plotly_events 捕获点击事件
+                clicked_points = plotly_events(
                     fig1,
                     click_event=True,
                     hover_event=False,
                     select_event=False,
-                    key="arc_plot",
+                    key="arc_click",
                 )
 
-                # 如果点击了某个点，更新 selected_idx（下一次 rerun 生效）
-                if events:
-                    point_idx = events[0].get("pointIndex")
-                    if isinstance(point_idx, int):
-                        st.session_state.selected_idx = point_idx
+                # 如果点击了某个点，用它来更新当前选中窗口
+                if clicked_points:
+                    try:
+                        new_idx = int(clicked_points[0]["customdata"][0])
+                        st.session_state.selected_idx = new_idx
+                    except Exception:
+                        pass
 
-            # Tab 2: 重采样情感弧线
+                # Tab 2: 重采样后的情感弧线
             with tab_arc_resampled:
                 fig2 = go.Figure()
                 if arc_x and arc_scores:
@@ -459,6 +441,7 @@ if arc_data is not None:
                             hovertemplate="Pos: %{x:.2f}<br>Score: %{y:.3f}",
                         )
                     )
+
                 fig2.update_layout(
                     xaxis_title="Normalized Position (0–1)",
                     yaxis_title="Sentiment Score (Positive Prob.)",
@@ -466,13 +449,14 @@ if arc_data is not None:
                     margin=dict(l=40, r=20, t=40, b=40),
                     hovermode="x",
                 )
+
                 st.plotly_chart(fig2, use_container_width=True)
 
-            # Tab 3: 全窗口表格
+            # Tab 3: 窗口详情表格
             with tab_table:
+                st.markdown("**每个窗口的文本片段与情感得分（可排序、筛选）**")
                 import pandas as pd
 
-                st.markdown("**每个窗口的文本片段与情感得分（可排序、筛选）**")
                 df_rows = []
                 for idx, (pos, win, sc) in enumerate(zip(positions, windows, scores)):
                     df_rows.append(
@@ -486,7 +470,16 @@ if arc_data is not None:
                 df = pd.DataFrame(df_rows)
                 st.dataframe(df, use_container_width=True)
 
+        # ---- 右侧：当前窗口详情（由 selected_idx 驱动）----
         with col_right:
+            selected_idx = st.session_state.selected_idx
+            selected_pos = positions[selected_idx]
+            selected_score = scores[selected_idx]
+            selected_win = windows[selected_idx]
+
+            center_pos = selected_pos + window_size / 2
+            percent = center_pos / max(total_len, 1)
+
             st.markdown("**当前选中窗口详情**")
             st.markdown(
                 f"- 窗口序号：`{selected_idx}` / `{len(positions) - 1}`"
@@ -501,13 +494,23 @@ if arc_data is not None:
             st.write(selected_win)
 
             st.markdown("---")
+            col_prev, col_next = st.columns(2)
+            with col_prev:
+                if st.button("⬅ 上一窗口", disabled=(selected_idx <= 0)):
+                    st.session_state.selected_idx = max(0, selected_idx - 1)
+            with col_next:
+                if st.button("下一窗口 ➡", disabled=(selected_idx >= len(positions) - 1)):
+                    st.session_state.selected_idx = min(
+                        len(positions) - 1, selected_idx + 1
+                    )
+
             st.caption(
-                "你可以：① 拖动上方滑块；② 在左侧弧线上点击任意一个点，来切换当前窗口。"
+                "交互说明：可以**点击左侧情感弧线上任意一点**，右侧会显示对应窗口的文本；"
+                "也可以使用“上一窗口 / 下一窗口”按钮逐步浏览。"
             )
 
-
 # ==============================
-# 8. 底部说明
+# 9. 底部说明
 # ==============================
 st.markdown("---")
 st.caption(
