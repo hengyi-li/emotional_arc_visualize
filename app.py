@@ -4,6 +4,7 @@ import torch
 import streamlit as st
 from transformers import BertTokenizer, BertForSequenceClassification
 import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 
 
 # ==============================
@@ -23,8 +24,9 @@ st.write(
 
 st.info(
     "情感弧线：把文本从头到尾切成许多小片段，分别评估情感（0=负向，1=正向），"
-    "按阅读顺序连成一条“情绪轨迹”。将鼠标悬停在任意一点，可以查看对应片段摘要。"
+    "按阅读顺序连成一条“情绪轨迹”。将鼠标悬停在任意一点，下方会显示对应片段摘要。"
 )
+
 
 # ==============================
 # 1. 设备 & 模型缓存（只加载一次）
@@ -43,15 +45,22 @@ def load_model_and_tokenizer():
 tokenizer, model, device = load_model_and_tokenizer()
 st.sidebar.success(f"模型已加载，设备：{device}")
 
+
 # ==============================
-# 2. 初始化会话状态（用来保存分析结果）
+# 2. 会话状态：分析结果 & 当前 hover 信息
 # ==============================
 if "arc_data" not in st.session_state:
     st.session_state.arc_data = None  # 存分析结果
 
+if "hover_original" not in st.session_state:
+    st.session_state.hover_original = None  # 原始弧线 hover 信息
+
+if "hover_resampled" not in st.session_state:
+    st.session_state.hover_resampled = None  # 重采样弧线 hover 信息
+
 
 # ==============================
-# 3. 滑动窗口 & 重采样函数
+# 3. 核心函数
 # ==============================
 def sliding_windows(text: str, window_size: int = 50, step: int = 40):
     """基于字符的滑动窗口。"""
@@ -284,11 +293,14 @@ if run_btn and final_text:
             "arc_scores": arc_scores,
             "windows": windows,
         }
+        # 重置 hover 信息
+        st.session_state.hover_original = None
+        st.session_state.hover_resampled = None
         st.success("分析完成 ✅")
 
 
 # ==============================
-# 8. 若已有分析结果，展示一张交互式情感弧线图
+# 8. 若已有分析结果，展示交互式情感弧线（原始 + 重采样）
 # ==============================
 arc_data = st.session_state.arc_data
 
@@ -324,75 +336,179 @@ if arc_data is not None:
         with col_c:
             st.metric("最高情感得分", f"{max_score:.3f}", help=f"出现在字符位置约 {max_pos}")
 
-        # ---- 8.2 情感弧线图（单图，靠 hover 查看详情）----
-        st.subheader("4️⃣ Emotional Arc 可视化（悬停查看片段摘要）")
+        # ---- 8.2 两种弧线：原始 + 重采样 ----
+        st.subheader("4️⃣ Emotional Arc 交互可视化")
 
-        # 为 tooltip 准备简短 snippets
-        snippets = []
+        tab_original, tab_resampled = st.tabs(["原始情感弧线", "重采样情感弧线（0–1 归一化）"])
+
+        # 统一 snippets（避免 tooltip 太长）
+        snippets_original = []
         for w in windows:
-            s = w[:50]  # 控制长度，避免 tooltip 太长
+            s = w[:50]
             if len(w) > 50:
                 s += "..."
-            snippets.append(s)
+            snippets_original.append(s)
 
-        fig = go.Figure()
+        # ==== Tab 1: 原始情感弧线（按字符位置） ====
+        with tab_original:
+            st.markdown("**按原文字符位置的情感弧线（悬停查看摘要）**")
 
-        # 主情感弧线
-        fig.add_trace(
-            go.Scatter(
-                x=positions,
-                y=scores,
-                mode="lines+markers",
-                name="Emotional Arc",
-                line=dict(color="#4F81BD", width=2),
-                marker=dict(color="#4F81BD", size=6),
-                customdata=[[i, snippets[i]] for i in range(len(positions))],
-                hovertemplate=(
-                    "<b>Window #%{customdata[0]}</b><br>"
-                    "Start: %{x}<br>"
-                    "Score: %{y:.3f}<br>"
-                    "Snippet: %{customdata[1]}"
+            fig1 = go.Figure()
+
+            # 主情感弧线
+            fig1.add_trace(
+                go.Scatter(
+                    x=positions,
+                    y=scores,
+                    mode="lines+markers",
+                    name="Emotional Arc",
+                    line=dict(color="#4F81BD", width=2),
+                    marker=dict(color="#4F81BD", size=6),
+                    customdata=[[i, pos, snippets_original[i]] for i, pos in enumerate(positions)],
+                    hoverinfo="skip",  # 不用默认 tooltip，我们自己在下方展示
+                )
+            )
+
+            # 全局最大 / 最小点
+            fig1.add_trace(
+                go.Scatter(
+                    x=[max_pos],
+                    y=[max_score],
+                    mode="markers",
+                    name="Max score",
+                    marker=dict(color="#2E8B57", size=10, symbol="triangle-up"),
+                    hovertemplate="Max score<br>Start: %{x}<br>Score: %{y:.3f}",
+                )
+            )
+            fig1.add_trace(
+                go.Scatter(
+                    x=[min_pos],
+                    y=[min_score],
+                    mode="markers",
+                    name="Min score",
+                    marker=dict(color="#E24A33", size=10, symbol="triangle-down"),
+                    hovertemplate="Min score<br>Start: %{x}<br>Score: %{y:.3f}",
+                )
+            )
+
+            fig1.update_layout(
+                template="plotly_white",
+                xaxis_title="Text Start Position (Character Index)",
+                yaxis_title="Sentiment Score (Positive Prob.)",
+                yaxis=dict(range=[0, 1]),
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0
                 ),
+                margin=dict(l=40, r=20, t=40, b=40),
+                hovermode="x",  # 只用 x 方向 hover，减少干扰
             )
-        )
 
-        # 全局最大 / 最小点（绿色 / 红色）
-        fig.add_trace(
-            go.Scatter(
-                x=[max_pos],
-                y=[max_score],
-                mode="markers",
-                name="Max score",
-                marker=dict(color="#2E8B57", size=10, symbol="triangle-up"),
-                hovertemplate="Max score<br>Start: %{x}<br>Score: %{y:.3f}",
+            # 捕获 hover 事件
+            hover_points = plotly_events(
+                fig1,
+                hover_event=True,
+                click_event=False,
+                select_event=False,
+                key="arc_hover_original",
             )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=[min_pos],
-                y=[min_score],
-                mode="markers",
-                name="Min score",
-                marker=dict(color="#E24A33", size=10, symbol="triangle-down"),
-                hovertemplate="Min score<br>Start: %{x}<br>Score: %{y:.3f}",
+
+            if hover_points:
+                p = hover_points[0]
+                try:
+                    idx = int(p["customdata"][0])
+                    pos_val = int(p["customdata"][1])
+                    snippet_val = str(p["customdata"][2])
+                    score_val = float(scores[idx])
+                    st.session_state.hover_original = {
+                        "idx": idx,
+                        "pos": pos_val,
+                        "score": score_val,
+                        "snippet": snippet_val,
+                    }
+                except Exception:
+                    pass
+
+            # 在图下方单独展示当前 hover 的摘要信息
+            hover_info = st.session_state.hover_original
+            st.markdown("---")
+            if hover_info is None:
+                st.caption("将鼠标移动到上方折线图的某个点，会在这里显示对应窗口的摘要。")
+            else:
+                st.markdown("**当前悬浮窗口摘要**")
+                st.markdown(
+                    f"- 窗口序号：`{hover_info['idx']}`  "
+                    f"- 起始位置：`{hover_info['pos']}` 字符  "
+                    f"- 情感得分：`{hover_info['score']:.4f}`"
+                )
+                st.markdown("> " + hover_info["snippet"])
+
+        # ==== Tab 2: 重采样后的情感弧线 ====
+        with tab_resampled:
+            st.markdown("**将情感弧线归一化到 0–1 区间后的曲线（方便对比不同长度文本）**")
+
+            fig2 = go.Figure()
+
+            # 重采样弧线
+            fig2.add_trace(
+                go.Scatter(
+                    x=arc_x,
+                    y=arc_scores,
+                    mode="lines+markers",
+                    name="Resampled Arc",
+                    line=dict(color="#AA6FE8", width=2),
+                    marker=dict(color="#AA6FE8", size=6),
+                    customdata=list(range(len(arc_scores))),
+                    hoverinfo="skip",
+                )
             )
-        )
 
-        fig.update_layout(
-            template="plotly_white",
-            xaxis_title="Text Start Position (Character Index)",
-            yaxis_title="Sentiment Score (Positive Prob.)",
-            yaxis=dict(range=[0, 1]),
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0
-            ),
-            margin=dict(l=40, r=20, t=40, b=40),
-            hovermode="x unified",
-        )
+            fig2.update_layout(
+                template="plotly_white",
+                xaxis_title="Normalized Position (0–1)",
+                yaxis_title="Sentiment Score (Positive Prob.)",
+                yaxis=dict(range=[0, 1]),
+                margin=dict(l=40, r=20, t=40, b=40),
+                hovermode="x",
+            )
 
-        st.plotly_chart(fig, use_container_width=True)
+            # hover 事件：这里我们只能给出“在整条线上的第几个点”和 score
+            hover_points_resampled = plotly_events(
+                fig2,
+                hover_event=True,
+                click_event=False,
+                select_event=False,
+                key="arc_hover_resampled",
+            )
 
-        # ---- 8.3 可选：展开查看完整窗口表格 ----
+            if hover_points_resampled:
+                p = hover_points_resampled[0]
+                try:
+                    idx = int(p["customdata"])
+                    x_val = float(p["x"])
+                    y_val = float(p["y"])
+                    st.session_state.hover_resampled = {
+                        "idx": idx,
+                        "x": x_val,
+                        "score": y_val,
+                    }
+                except Exception:
+                    pass
+
+            hover_info_r = st.session_state.hover_resampled
+            st.markdown("---")
+            if hover_info_r is None:
+                st.caption("将鼠标移动到上方折线图的某个点，会在这里显示该位置的情感信息。")
+            else:
+                st.markdown("**当前悬浮位置摘要**")
+                st.markdown(
+                    f"- 归一化位置：`{hover_info_r['x']:.3f}` "
+                    f"- 弧线索引：`{hover_info_r['idx']}` "
+                    f"- 情感得分：`{hover_info_r['score']:.4f}`"
+                )
+
+        # ==============================
+        # 9. 可选：展开查看完整窗口表格
+        # ==============================
         with st.expander("📋 展开查看所有窗口的详细得分与文本片段"):
             import pandas as pd
 
@@ -411,7 +527,7 @@ if arc_data is not None:
 
 
 # ==============================
-# 9. 底部说明
+# 10. 底部说明
 # ==============================
 st.markdown("---")
 st.caption(
