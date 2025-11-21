@@ -1,4 +1,4 @@
-# app.py
+# app.py文件
 import io
 import numpy as np
 import torch
