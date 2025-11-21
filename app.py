@@ -1,5 +1,4 @@
-# app.py文件
-import io
+# app.py
 import numpy as np
 import torch
 import streamlit as st
@@ -17,8 +16,13 @@ st.set_page_config(
 
 st.title("📈 Emotional Arc 可视化（基于中文情感 BERT）")
 st.write(
-    "支持上传 `.txt` 文件或直接输入文本，"
-    "对全文做滑动窗口情感分析，并绘制情感弧线。"
+    "支持上传 `.txt` 文件或直接输入文本，对全文做滑动窗口情感分析，"
+    "展示故事在阅读过程中的情绪起伏曲线（Emotional Arc）。"
+)
+
+st.info(
+    "情感弧线 = 文本从头到尾，情绪如何在“时间维度”上起伏的一条曲线。"
+    "曲线越往上，表示越偏正向；越往下，表示越偏负向。"
 )
 
 # ==============================
@@ -34,6 +38,7 @@ def load_model_and_tokenizer():
     model.eval()
     return tokenizer, model, device
 
+
 tokenizer, model, device = load_model_and_tokenizer()
 st.sidebar.success(f"模型已加载，设备：{device}")
 
@@ -48,7 +53,7 @@ def sliding_windows(text: str, window_size: int = 50, step: int = 40):
     step: 每次滑动的步长（字符）
     """
     windows = []
-    positions = []   # 每个窗口在原文中的起始字符索引
+    positions = []  # 每个窗口在原文中的起始字符索引
 
     n = len(text)
     if n == 0:
@@ -59,7 +64,7 @@ def sliding_windows(text: str, window_size: int = 50, step: int = 40):
         return windows, positions
 
     for i in range(0, n, step):
-        window = text[i:i + window_size]
+        window = text[i : i + window_size]
         if len(window) == 0:
             break
         windows.append(window)
@@ -80,13 +85,13 @@ def sentiment_scores(sent_list, batch_size: int = 32, max_length: int = 64):
         return all_scores
 
     for i in range(0, len(sent_list), batch_size):
-        batch = sent_list[i:i + batch_size]
+        batch = sent_list[i : i + batch_size]
         inputs = tokenizer(
             batch,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=max_length
+            max_length=max_length,
         ).to(device)
 
         with torch.no_grad():
@@ -131,44 +136,54 @@ st.sidebar.header("参数设置")
 window_size = st.sidebar.number_input(
     "窗口大小（字符）",
     min_value=10,
-    max_value=1000,
+    max_value=2000,
     value=50,
     step=5,
+    help="每次情感分析的字符长度，类似一个“片段”的大小。",
 )
 
 step_size = st.sidebar.number_input(
     "滑动步长（字符）",
     min_value=1,
-    max_value=1000,
+    max_value=2000,
     value=40,
     step=1,
+    help="窗口每次向前滑动的字符数。步长越小，曲线越平滑，但计算越慢。",
 )
 
 arc_len = st.sidebar.number_input(
-    "重采样点数（情感弧线长度）",
+    "弧线点数（重采样后）",
     min_value=5,
     max_value=200,
     value=20,
     step=1,
+    help="将整条情感弧线压缩到固定数量的点，方便对比不同文本。",
 )
 
-batch_size = st.sidebar.number_input(
-    "推理 batch size",
-    min_value=1,
-    max_value=128,
-    value=32,
-    step=1,
-)
+st.sidebar.markdown("---")
+advanced = st.sidebar.checkbox("显示高级参数", value=False)
 
-max_length = st.sidebar.number_input(
-    "Tokenizer max_length",
-    min_value=16,
-    max_value=256,
-    value=64,
-    step=8,
-)
-
-st.sidebar.caption("一般保持默认即可，有性能/长度需求再调整。")
+if advanced:
+    batch_size = st.sidebar.number_input(
+        "推理 batch size",
+        min_value=1,
+        max_value=128,
+        value=32,
+        step=1,
+        help="一次送入模型的窗口数量。过大可能导致内存不足。",
+    )
+    max_length = st.sidebar.number_input(
+        "Tokenizer max_length",
+        min_value=16,
+        max_value=256,
+        value=64,
+        step=8,
+        help="单个窗口的最大 token 长度，通常保持默认即可。",
+    )
+else:
+    batch_size = 32
+    max_length = 64
+    st.sidebar.caption("高级参数使用默认设置。如需性能调优可勾选上方开关。")
 
 
 # ==============================
@@ -183,13 +198,13 @@ with col_file:
     uploaded_file = st.file_uploader(
         "上传 `.txt` 文件（可选）",
         type=["txt"],
-        help="如果选择文件，将优先使用文件内容",
+        help="如果选择文件，将优先使用文件内容。",
     )
 
 with col_text:
     default_text = ""
     text_input = st.text_area(
-        "或者直接在这里输入/粘贴文本",
+        "或者直接在这里输入 / 粘贴文本",
         value=default_text,
         height=220,
         placeholder="例如：小说片段、长微博、文章内容等……",
@@ -198,12 +213,10 @@ with col_text:
 # 读取文件内容（若有）
 file_text = ""
 if uploaded_file is not None:
-    # uploaded_file 是一个 BytesIO-like 对象
     bytes_data = uploaded_file.read()
     try:
         file_text = bytes_data.decode("utf-8")
     except UnicodeDecodeError:
-        # 兜底用 gbk 尝试一下
         try:
             file_text = bytes_data.decode("gbk")
         except UnicodeDecodeError:
@@ -212,10 +225,22 @@ if uploaded_file is not None:
 # 最终使用的文本：优先文件，否则文本框
 final_text = file_text.strip() if file_text else text_input.strip()
 
+MAX_CHARS = 20000  # 建议上限
 if not final_text:
     st.info("请上传 txt 文件或在右侧文本框输入内容。")
 else:
-    st.success(f"当前文本长度：{len(final_text)} 个字符。")
+    if file_text:
+        st.success(
+            f"已使用上传文件内容：**{uploaded_file.name}**，长度 {len(final_text)} 个字符。"
+        )
+    else:
+        st.success(f"已使用文本框内容，长度 {len(final_text)} 个字符。")
+
+    if len(final_text) > MAX_CHARS:
+        st.warning(
+            f"当前文本长度为 {len(final_text)} 个字符，超过推荐上限 {MAX_CHARS}。"
+            "分析可能较慢，建议截取关键片段或章节试试看。"
+        )
 
 
 # ==============================
@@ -254,75 +279,109 @@ if run_btn and final_text:
             max_length=max_length,
         )
 
-    # ==========================
-    # 6.1 概览信息
-    # ==========================
-    st.success("分析完成 ✅")
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("窗口数量", len(positions))
-    with col_b:
-        st.metric("原始弧线点数", len(scores))
-    with col_c:
-        st.metric("重采样点数", len(arc_scores))
+    if not positions:
+        st.warning("未生成任何窗口，可能是参数设置不合理（例如窗口太大、文本太短）。")
+    else:
+        # ==========================
+        # 6.1 概览信息
+        # ==========================
+        st.success("分析完成 ✅")
 
-    # ==========================
-    # 6.2 绘图区域
-    # ==========================
-    st.subheader("3️⃣ Emotional Arc 可视化")
+        scores_arr = np.array(scores)
+        avg_score = float(scores_arr.mean())
+        min_score = float(scores_arr.min())
+        max_score = float(scores_arr.max())
+        min_idx = int(scores_arr.argmin())
+        max_idx = int(scores_arr.argmax())
+        min_pos = positions[min_idx]
+        max_pos = positions[max_idx]
 
-    col_raw, col_resampled = st.columns(2)
+        st.subheader("3️⃣ 整体情感概览")
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("平均情感得分", f"{avg_score:.3f}")
+        with col_b:
+            st.metric("最低情感得分", f"{min_score:.3f}", help=f"出现在字符位置约 {min_pos}")
+        with col_c:
+            st.metric("最高情感得分", f"{max_score:.3f}", help=f"出现在字符位置约 {max_pos}")
 
-    # 原始情感弧线（未重采样）
-    with col_raw:
-        st.markdown("**原始情感弧线（按窗口位置）**")
-        fig1, ax1 = plt.subplots(figsize=(6, 3))
-        if positions and scores:
-            ax1.plot(positions, scores, marker="o")
-        ax1.set_xlabel("Text Start Position (Character Index)")
-        ax1.set_ylabel("Sentiment Score (Positive Prob.)")
-        ax1.set_ylim(0, 1)
-        ax1.grid(True, alpha=0.3)
-        st.pyplot(fig1)
+        # ==========================
+        # 6.2 结果展示：Tabs
+        # ==========================
+        st.subheader("4️⃣ Emotional Arc 详细结果")
+        tab_arc, tab_arc_resampled, tab_table = st.tabs(
+            ["原始情感弧线", "重采样弧线", "窗口详情"]
+        )
 
-    # 重采样后的情感弧线
-    with col_resampled:
-        st.markdown("**重采样情感弧线（归一化 0–1）**")
-        fig2, ax2 = plt.subplots(figsize=(6, 3))
-        if arc_x and arc_scores:
-            ax2.plot(arc_x, arc_scores, marker="o")
-        ax2.set_xlabel("Normalized Position (0–1)")
-        ax2.set_ylabel("Sentiment Score (Positive Prob.)")
-        ax2.set_ylim(0, 1)
-        ax2.grid(True, alpha=0.3)
-        st.pyplot(fig2)
+        # ---- Tab 1: 原始情感弧线 ----
+        with tab_arc:
+            st.markdown("**原始情感弧线（按窗口起始位置）**")
+            fig1, ax1 = plt.subplots(figsize=(6, 3))
+            if positions and scores:
+                ax1.plot(positions, scores, marker="o")
 
-    # ==========================
-    # 6.3 详细窗口情感表（可选）
-    # ==========================
-    st.subheader("4️⃣ 详细窗口情感得分（可展开查看）")
-    with st.expander("查看每个窗口的文本片段和情感得分"):
-        import pandas as pd
+                # 标记最高 & 最低点
+                pos_arr = np.array(positions)
+                ax1.scatter(
+                    [pos_arr[max_idx]],
+                    [scores_arr[max_idx]],
+                    s=60,
+                    edgecolors="black",
+                    facecolors="none",
+                    linewidths=1.5,
+                )
+                ax1.scatter(
+                    [pos_arr[min_idx]],
+                    [scores_arr[min_idx]],
+                    s=60,
+                    edgecolors="black",
+                    facecolors="none",
+                    linewidths=1.5,
+                )
 
-        df_rows = []
-        for idx, (pos, win, sc) in enumerate(zip(positions, windows, scores)):
-            df_rows.append(
-                {
-                    "窗口序号": idx,
-                    "起始位置": pos,
-                    "窗口文本": win,
-                    "情感得分(正向概率)": sc,
-                }
-            )
-        df = pd.DataFrame(df_rows)
-        st.dataframe(df, use_container_width=True)
+            ax1.set_xlabel("Text Start Position (Character Index)")
+            ax1.set_ylabel("Sentiment Score (Positive Prob.)")
+            ax1.set_ylim(0, 1)
+            ax1.grid(True, alpha=0.3)
+            st.pyplot(fig1)
+
+        # ---- Tab 2: 重采样后的情感弧线 ----
+        with tab_arc_resampled:
+            st.markdown("**重采样情感弧线（归一化位置 0–1）**")
+            fig2, ax2 = plt.subplots(figsize=(6, 3))
+            if arc_x and arc_scores:
+                ax2.plot(arc_x, arc_scores, marker="o")
+            ax2.set_xlabel("Normalized Position (0–1)")
+            ax2.set_ylabel("Sentiment Score (Positive Prob.)")
+            ax2.set_ylim(0, 1)
+            ax2.grid(True, alpha=0.3)
+            st.pyplot(fig2)
+
+        # ---- Tab 3: 窗口详情表格 ----
+        with tab_table:
+            st.markdown("**每个窗口的文本片段与情感得分**")
+            import pandas as pd
+
+            df_rows = []
+            for idx, (pos, win, sc) in enumerate(zip(positions, windows, scores)):
+                df_rows.append(
+                    {
+                        "窗口序号": idx,
+                        "起始位置（字符索引）": pos,
+                        "窗口文本": win,
+                        "情感得分 (Positive Prob.)": sc,
+                    }
+                )
+            df = pd.DataFrame(df_rows)
+            st.dataframe(df, use_container_width=True)
 
 
 # ==============================
-# 7. 底部说明。
+# 7. 底部说明
 # ==============================
 st.markdown("---")
 st.caption(
     "模型：IDEA-CCNL/Erlangshen-Roberta-110M-Sentiment；"
     "情感得分越接近 1 表示越正向，越接近 0 越负向。"
+    "这是一种自动分析结果，仅供参考和探索文本情绪结构使用。"
 )
