@@ -370,3 +370,4 @@ if arc_data is not None:
                         "起始位置：%{x}<br>"
                         "情绪分数：%{y:.3f}<br>"
                         "片段摘要：%{customdata[1]}"
+                    )))
